@@ -3,7 +3,9 @@ package main
 import (
 	"archive/tar"
 	"compress/gzip"
+	"flag"
 	"fmt"
+	"gopkg.in/ini.v1"
 	"io"
 	"io/ioutil"
 	"log"
@@ -13,7 +15,10 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"time"
 )
+
+var VERSION string = "0.0.1"
 
 var doxygen_template_conf string = "template.conf"
 
@@ -243,8 +248,61 @@ func handler(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 }
 
-func main() {
-	http.HandleFunc("/doxygen", handler)
+func handleVersion(w http.ResponseWriter, req *http.Request) {
+	if req.Method != "GET" {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	fmt.Fprintf(w, VERSION)
+	w.WriteHeader(http.StatusOK)
+}
 
-	log.Fatal(http.ListenAndServe(":8080", nil))
+func main() {
+
+	var version, verbose bool
+	flag.BoolVar(&version, "version", false, "print the version of the program")
+	flag.BoolVar(&verbose, "verbose", false, "verbose output")
+	var config_file string
+	flag.StringVar(&config_file, "config", "doxygen-restapi.ini", "Configuration file")
+	var server_port int
+	flag.IntVar(&server_port, "-port", 8080, "API port")
+
+	flag.Parse()
+
+	if version {
+		fmt.Println(VERSION)
+		os.Exit(0)
+	}
+
+	cfg, err := ini.InsensitiveLoad(config_file)
+	if err != nil {
+		fmt.Printf("Fail to read file: %v", err)
+		os.Exit(1)
+	}
+	if !cfg.Section("").Haskey("verbose") {
+		cfg.Section("").NewBooleanKey("verbose")
+	}
+	if dv, _ := cfg.Section("").Key("verbose").Bool(); dv != verbose {
+		cfg.Section("").Key("verbose").SetValue(fmt.Sprintf("%t", verbose))
+	}
+	// TODO check mandatory config
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/doxygen", handler)
+	mux.HandleFunc("/version", handleVersion)
+	api := apiHandler{
+		cfg.Section("").Key("root").String(),
+		cfg.Section("").Key("verbose").MustBool(),
+		cfg.Section("").Key("SWA").MustBool(),
+	}
+	mux.Handle("/", api)
+	//mux.Handle("/", http.FileServer(http.Dir(api.root)))
+
+	s := &http.Server{
+		Addr:         fmt.Sprintf(":%d", server_port),
+		Handler:      mux,
+		ReadTimeout:  1 * time.Second,
+		WriteTimeout: 1 * time.Second,
+	}
+	log.Fatal(s.ListenAndServe())
 }
